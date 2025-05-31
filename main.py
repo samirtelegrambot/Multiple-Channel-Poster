@@ -88,11 +88,17 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     if text == "➕ Add Channel":
-        await update.message.reply_text("Send the @username of the channel:")
+        await update.message.reply_text(
+            "📥 Send the channel identifier:\n\n"
+            "➡️ For public: `@channelusername`\n"
+            "➡️ For private: `-100...` (channel ID)\n\n"
+            "⚠️ Make sure bot is **admin** in that channel.",
+            parse_mode='Markdown'
+        )
         return ADD_CHANNEL
 
     elif text == "➖ Remove Channel":
-        await update.message.reply_text("Send the @username of the channel to remove:")
+        await update.message.reply_text("Send the @username or ID of the channel to remove:")
         return REMOVE_CHANNEL
 
     elif text == "📃 My Channels":
@@ -167,12 +173,17 @@ async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     channel = update.message.text.strip()
     user_id = str(update.effective_user.id)
+
+    if not (channel.startswith("@") or channel.startswith("-100") or "/c/" in channel):
+        await update.message.reply_text("❌ Invalid format. Use @username or channel ID (e.g., -1001234567890).")
+        return ConversationHandler.END
+
     channels = load_channels()
     channels.setdefault(user_id, [])
     if channel not in channels[user_id]:
         channels[user_id].append(channel)
         save_channels(channels)
-        await update.message.reply_text(f"✅ Channel {channel} added.")
+        await update.message.reply_text(f"✅ Channel {channel} added.\n\n⚠️ Make sure the bot is admin in that channel.")
     else:
         await update.message.reply_text("⚠️ Channel already added.")
     return ConversationHandler.END
@@ -201,11 +212,11 @@ async def post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "post_to_all":
         context.user_data["post_channels"] = channels
-        await query.edit_message_text("Send the message to post in **all channels**:")
+        await query.edit_message_text("📨 Send the message to post in **all channels**:", parse_mode='Markdown')
     else:
         channel = data.split("|")[1]
         context.user_data["post_channels"] = [channel]
-        await query.edit_message_text(f"Send the message to post in {channel}:")
+        await query.edit_message_text(f"📨 Send the message to post in `{channel}`:", parse_mode='Markdown')
 
     return AWAITING_POST_TEXT
 
