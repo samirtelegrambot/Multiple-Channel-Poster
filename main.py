@@ -1,26 +1,26 @@
 import os
 import json
-from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, Message
+)
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    ConversationHandler,
-    filters
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ContextTypes, ConversationHandler, filters
 )
 from dotenv import load_dotenv
 
+# Load environment variables
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = 8150652959
+OWNER_ID = int(os.getenv("OWNER_ID"))
+
 ADMINS_FILE = 'admins.json'
 CHANNELS_FILE = 'channels.json'
 
+# States for ConversationHandler
 ADD_ADMIN, REMOVE_ADMIN, ADD_CHANNEL, REMOVE_CHANNEL, FORWARD_COLLECT, SELECT_CHANNELS = range(6)
 
-# Initialize JSON files if not exist
+# Ensure files exist
 for file in [ADMINS_FILE, CHANNELS_FILE]:
     if not os.path.exists(file):
         with open(file, 'w') as f:
@@ -32,11 +32,10 @@ def load_json(file):
 
 def save_json(file, data):
     with open(file, 'w') as f:
-        json.dump(data, f, indent=4)
+        json.dump(data, f, indent=2)
 
 def is_admin(user_id):
     admins = load_json(ADMINS_FILE)
-    # admins stored as list of strings
     return str(user_id) in admins or user_id == OWNER_ID
 
 def get_main_keyboard(user_id):
@@ -58,6 +57,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.effective_user.id
+
     if not is_admin(user_id):
         await update.message.reply_text("❌ Access denied.")
         return ConversationHandler.END
@@ -73,8 +73,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "📃 My Channels":
         channels = load_json(CHANNELS_FILE).get(str(user_id), [])
         if channels:
-            formatted = "\n".join(f"- {ch}" for ch in channels)
-            await update.message.reply_text(formatted)
+            await update.message.reply_text("\n".join(channels))
         else:
             await update.message.reply_text("❌ No channels added.")
         return ConversationHandler.END
@@ -108,27 +107,23 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⬅️ Back to main menu", reply_markup=get_main_keyboard(user_id))
         return ConversationHandler.END
 
+    else:
+        await update.message.reply_text("❌ Invalid option. Please select from menu.")
+        return ConversationHandler.END
+
 async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_id = update.message.text.strip()
     admins = load_json(ADMINS_FILE)
-    # Make sure admins is list
-    if not isinstance(admins, list):
-        admins = []
-    if new_id not in admins:
-        admins.append(new_id)
-        save_json(ADMINS_FILE, admins)
-        await update.message.reply_text(f"✅ Admin {new_id} added.")
-    else:
-        await update.message.reply_text("⚠️ Admin already exists.")
+    admins[new_id] = True
+    save_json(ADMINS_FILE, admins)
+    await update.message.reply_text(f"✅ Admin {new_id} added.")
     return ConversationHandler.END
 
 async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     del_id = update.message.text.strip()
     admins = load_json(ADMINS_FILE)
-    if not isinstance(admins, list):
-        admins = []
     if del_id in admins:
-        admins.remove(del_id)
+        del admins[del_id]
         save_json(ADMINS_FILE, admins)
         await update.message.reply_text(f"❌ Admin {del_id} removed.")
     else:
@@ -171,8 +166,9 @@ async def done_forwarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     channels = load_json(CHANNELS_FILE).get(user_id, [])
     if not channels:
-        await update.message.reply_text("❌ No channels available.")
+        await update.message.reply_text("❌ No channels available to post.")
         return ConversationHandler.END
+
     buttons = [[InlineKeyboardButton(ch, callback_data=ch)] for ch in channels]
     buttons.append([InlineKeyboardButton("✅ All", callback_data="ALL")])
     await update.message.reply_text("Select channels to post:", reply_markup=InlineKeyboardMarkup(buttons))
@@ -182,11 +178,14 @@ async def handle_channel_selection(update: Update, context: ContextTypes.DEFAULT
     query = update.callback_query
     await query.answer()
     selected = query.data
-    user_id = str(query.from_user.id)
+    user_id = query.from_user.id
     messages = context.user_data.get('forwarded_messages', [])
 
-    targets = load_json(CHANNELS_FILE).get(user_id, [])
+    targets = load_json(CHANNELS_FILE).get(str(user_id), [])
     if selected != "ALL":
+        if selected not in targets:
+            await query.edit_message_text("❌ You don't have access to this channel.")
+            return ConversationHandler.END
         targets = [selected]
 
     for msg in messages:
@@ -194,7 +193,7 @@ async def handle_channel_selection(update: Update, context: ContextTypes.DEFAULT
             try:
                 await msg.copy_to(chat_id=ch)
             except Exception as e:
-                await query.message.reply_text(f"❌ Failed to post in {ch}: {e}")
+                await query.message.reply_text(f"❌ Failed in {ch}: {e}")
 
     await query.edit_message_text("✅ All messages posted.")
     context.user_data['forwarded_messages'] = []
@@ -204,11 +203,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Cancelled.")
     return ConversationHandler.END
 
-if __name__ == '__main__':
-    if not BOT_TOKEN:
-        print("Error: BOT_TOKEN not found in environment variables. Please check your .env file.")
-        exit(1)
-
+def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     conv_handler = ConversationHandler(
@@ -227,5 +222,8 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv_handler)
 
-    print("🤖 Bot running...")
+    print("🤖 Bot is running...")
     app.run_polling()
+
+if __name__ == "__main__":
+    main()
