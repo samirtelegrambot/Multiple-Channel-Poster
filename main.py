@@ -3,7 +3,8 @@ import json
 import logging
 import sqlite3
 import time
-from datetime import datetime
+import datetime
+import fcntl  # For file locking (Linux/Unix only)
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, ConversationHandler, ContextTypes, filters
 from dotenv import load_dotenv
@@ -27,6 +28,27 @@ ADD_ADMIN, REMOVE_ADMIN, ADD_CHANNEL, REMOVE_CHANNEL, POST_MESSAGE, CONFIRM_ACTI
 # Rate limiting
 LAST_POST_TIME = {}
 POST_RATE = 60  # 60 seconds cooldown
+
+# Lock file to prevent multiple instances
+LOCK_FILE = "bot.lock"
+
+def acquire_lock():
+    try:
+        lock_fd = open(LOCK_FILE, 'w')
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock_fd
+    except (IOError, OSError):
+        logger.error("Another instance of the bot is already running.")
+        return None
+
+def release_lock(lock_fd):
+    if lock_fd:
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+        lock_fd.close()
+        try:
+            os.remove(LOCK_FILE)
+        except OSError:
+            pass
 
 # Initialize SQLite database
 def initialize_db():
@@ -99,7 +121,7 @@ def log_action(user_id, action, details):
     try:
         conn = sqlite3.connect('bot_data.db')
         c = conn.cursor()
-        timestamp = datetime.now().isoformat()
+        timestamp = datetime.datetime.now().isoformat()
         c.execute("INSERT INTO logs (timestamp, user_id, action, details) VALUES (?, ?, ?, ?)",
                   (timestamp, str(user_id), action, details))
         conn.commit()
@@ -401,37 +423,55 @@ async def post_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 def main():
-    initialize_db()
-    if not BOT_TOKEN or not OWNER_ID:
-        logger.error("BOT_TOKEN or OWNER_ID not set")
+    lock_fd = acquire_lock()
+    if not lock_fd:
+        logger.error("Cannot start bot: another instance is running.")
         return
 
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler("start", start),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler),
-        ],
-        states={
-            ADD_ADMIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_admin)],
-            REMOVE_ADMIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_admin)],
-            ADD_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_channel)],
-            REMOVE_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_channel)],
-            POST_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, post_message)],
-            CONFIRM_ACTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_action)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        allow_reentry=True
-    )
-
-    app.add_handler(conv_handler)
-
-    logger.info("Bot is running...")
     try:
-        app.run_polling()
-    except Exception as e:
-        logger.error(f"Bot crashed: {e}")
+        initialize_db()
+        if not BOT_TOKEN or not OWNER_ID:
+            logger.error("BOT_TOKEN or OWNER_ID not set")
+            return
+
+        app = Application.builder().token(BOT_TOKEN).build()
+
+        conv_handler = ConversationHandler(
+            entry_points=[
+                CommandHandler("start", start),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler),
+            ],
+            states={
+                ADD_ADMIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_admin)],
+                REMOVE_ADMIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_admin)],
+                ADD_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_channel)],
+                REMOVE_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_channel)],
+                POST_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, post_message)],
+                CONFIRM_ACTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_action)],
+            },
+            fallbacks=[CommandHandler("cancel", cancel)],
+            allow_reentry=True
+        )
+
+        app.add_handler(conv_handler)
+
+        logger.info("Bot is starting...")
+        max_retries = 5
+        retry_delay = 5
+        for attempt in range(max_retries):
+            try:
+                app.run_polling()
+                break
+            except telegram.error.Conflict as e:
+                logger.error(f"Conflict error: {e}. Retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                time.sleep(retry_delay)
+            except Exception as e:
+                logger.error(f"Bot crashed: {e}")
+                break
+        else:
+            logger.error("Max retries reached. Could not resolve conflict. Please ensure only one bot instance is running.")
+    finally:
+        release_lock(lock_fd)
 
 if __name__ == "__main__":
     main()
