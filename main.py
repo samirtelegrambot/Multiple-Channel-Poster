@@ -1,283 +1,295 @@
 import os
 import json
 import logging
-from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ContextTypes, ConversationHandler,
-    filters
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ConversationHandler, ContextTypes, filters
 )
+from dotenv import load_dotenv
+import telegram.error
 
-# Load environment
-load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID"))
-
-# File paths
-CHANNELS_FILE = "channels.json"
-STORED_FILE = "stored_messages.json"
-
-# States
-SELECT_ACTION, CHANNEL_MENU, POST_STORED_MENU = range(3)
-
-# Logging
-logging.basicConfig(level=logging.INFO)
+# Logging setup
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Load .env values
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+OWNER_ID = int(os.getenv("OWNER_ID", 0))
+
+ADMINS_FILE = 'admins.json'
+CHANNELS_FILE = 'channels.json'
+
+# States
+ADD_ADMIN, REMOVE_ADMIN, ADD_CHANNEL, REMOVE_CHANNEL, POST_MESSAGE = range(5)
+
+def initialize_files():
+    for file in [ADMINS_FILE, CHANNELS_FILE]:
+        if not os.path.exists(file):
+            with open(file, 'w') as f:
+                json.dump({}, f)
 
 def load_json(file):
-    if not os.path.exists(file):
+    try:
+        with open(file, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading {file}: {e}")
         return {}
-    with open(file, "r") as f:
-        return json.load(f)
-
 
 def save_json(file, data):
-    with open(file, "w") as f:
-        json.dump(data, f, indent=2)
-
+    try:
+        with open(file, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving {file}: {e}")
 
 def is_admin(user_id):
-    data = load_json("admins.json")
-    return user_id == OWNER_ID or str(user_id) in data
+    admins = load_json(ADMINS_FILE)
+    return user_id == OWNER_ID or str(user_id) in admins
 
+async def is_bot_channel_admin(context, channel_id):
+    try:
+        chat_member = await context.bot.get_chat_member(channel_id, context.bot.id)
+        return chat_member.status in ['administrator', 'creator']
+    except telegram.error.TelegramError:
+        return False
+
+def get_main_keyboard(user_id):
+    keyboard = [
+        [InlineKeyboardButton("➕ Add Channel", callback_data="add_channel"),
+         InlineKeyboardButton("➖ Remove Channel", callback_data="remove_channel")],
+        [InlineKeyboardButton("📃 My Channels", callback_data="list_channels"),
+         InlineKeyboardButton("📤 Post", callback_data="post")]
+    ]
+    if user_id == OWNER_ID:
+        keyboard.append([InlineKeyboardButton("🧑‍💻 Manage Admins", callback_data="manage_admins")])
+    return InlineKeyboardMarkup(keyboard)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
-        await update.message.reply_text("🚫 You are not authorized to use this bot.")
+        await update.message.reply_text("❌ Access denied. Admins only.")
         return ConversationHandler.END
+    await update.message.reply_text("Welcome! Use the menu below:", reply_markup=get_main_keyboard(user_id))
+    return ConversationHandler.END
 
-    buttons = [
-        [InlineKeyboardButton("➕ Add Channel", callback_data="add_channel")],
-        [InlineKeyboardButton("📋 List Channels", callback_data="list_channels")],
-        [InlineKeyboardButton("❌ Remove Channel", callback_data="remove_channel")],
-        [InlineKeyboardButton("📥 Store Forwarded", callback_data="store_forwarded")],
-        [InlineKeyboardButton("📤 Post Stored", callback_data="post_stored")],
-    ]
-    await update.message.reply_text("Welcome to the Bot Panel 👇", reply_markup=InlineKeyboardMarkup(buttons))
-    return SELECT_ACTION
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    await update.message.reply_text("Operation cancelled.", reply_markup=get_main_keyboard(user_id))
+    return ConversationHandler.END
 
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
 
     if not is_admin(user_id):
-        await query.message.reply_text("🚫 You are not authorized.")
+        await query.message.reply_text("❌ Access denied.")
         return ConversationHandler.END
 
     data = query.data
 
-    if data == "add_channel":
-        await query.message.reply_text("Send me the channel @username or channel ID to add:")
-        return CHANNEL_MENU
+    if data == "manage_admins" and user_id == OWNER_ID:
+        keyboard = [
+            [InlineKeyboardButton("➕ Add Admin", callback_data="add_admin"),
+             InlineKeyboardButton("➖ Remove Admin", callback_data="remove_admin")],
+            [InlineKeyboardButton("📋 List Admins", callback_data="list_admins"),
+             InlineKeyboardButton("🔙 Back", callback_data="back")]
+        ]
+        await query.message.reply_text("Admin Panel:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return ConversationHandler.END
+
+    elif data == "add_admin" and user_id == OWNER_ID:
+        await query.message.reply_text("Send the user ID to add (or /cancel to abort):")
+        return ADD_ADMIN
+
+    elif data == "remove_admin" and user_id == OWNER_ID:
+        await query.message.reply_text("Send the user ID to remove (or /cancel to abort):")
+        return REMOVE_ADMIN
+
+    elif data == "list_admins" and user_id == OWNER_ID:
+        admins = list(load_json(ADMINS_FILE).keys())
+        msg = "👮‍♂️ Admins:\n" + "\n".join(admins) if admins else "No admins yet."
+        await query.message.reply_text(msg)
+        return ConversationHandler.END
+
+    elif data == "add_channel":
+        await query.message.reply_text("Send the channel ID or username (e.g., @ChannelName or -100123456789) (or /cancel to abort):")
+        return ADD_CHANNEL
+
+    elif data == "remove_channel":
+        await query.message.reply_text("Send the channel ID or username to remove (or /cancel to abort):")
+        return REMOVE_CHANNEL
 
     elif data == "list_channels":
-        channels = load_json(CHANNELS_FILE).get(str(user_id), {})
+        channels = load_json(CHANNELS_FILE)
         if not channels:
             await query.message.reply_text("No channels added yet.")
         else:
-            text = "\n".join([f"- {name} (`{chat_id}`)" for chat_id, name in channels.items()])
-            await query.message.reply_text(f"Your channels:\n{text}", parse_mode="Markdown")
-        return SELECT_ACTION
+            msg = "📃 Channels:\n" + "\n".join(f"{k} ({v})" for k, v in channels.items())
+            await query.message.reply_text(msg)
+        return ConversationHandler.END
 
-    elif data == "remove_channel":
-        channels = load_json(CHANNELS_FILE).get(str(user_id), {})
-        if not channels:
-            await query.message.reply_text("You have no channels to remove.")
-            return SELECT_ACTION
+    elif data == "post":
+        await query.message.reply_text("Send the message to post to all channels (or /cancel to abort):")
+        return POST_MESSAGE
 
-        buttons = [
-            [InlineKeyboardButton(name, callback_data=f"remove|{chat_id}")]
-            for chat_id, name in channels.items()
-        ]
-        buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="back")])
-        await query.message.reply_text("Select a channel to remove:", reply_markup=InlineKeyboardMarkup(buttons))
-        return SELECT_ACTION
+    elif data == "back":
+        await query.message.reply_text("Main menu:", reply_markup=get_main_keyboard(user_id))
+        return ConversationHandler.END
 
-    elif data == "store_forwarded":
-        await query.message.reply_text("Forward messages you want to store. Send /done when finished.")
-        return POST_STORED_MENU
+    else:
+        await query.message.reply_text("❌ Only the owner can manage admins.", reply_markup=get_main_keyboard(user_id))
+        return ConversationHandler.END
 
-    elif data == "post_stored":
-        buttons = [
-            [InlineKeyboardButton("🧹 Clear Stored", callback_data="clear_stored")],
-            [InlineKeyboardButton("📤 Post to All", callback_data="post_all")],
-            [InlineKeyboardButton("📂 Select Channel", callback_data="select_channel")],
-            [InlineKeyboardButton("⬅️ Back", callback_data="back_to_main")]
-        ]
-        await query.message.reply_text("Post Stored Messages:", reply_markup=InlineKeyboardMarkup(buttons))
-        return POST_STORED_MENU
-
-    elif data.startswith("remove|"):
-        _, chat_id = data.split("|", 1)
-        all_data = load_json(CHANNELS_FILE)
-        if str(user_id) in all_data and chat_id in all_data[str(user_id)]:
-            del all_data[str(user_id)][chat_id]
-            save_json(CHANNELS_FILE, all_data)
-            await query.message.reply_text("✅ Channel removed.")
-        else:
-            await query.message.reply_text("❌ Channel not found.")
-        return SELECT_ACTION
-
-    elif data == "clear_stored":
-        stored = load_json(STORED_FILE)
-        stored[str(user_id)] = []
-        save_json(STORED_FILE, stored)
-        await query.message.reply_text("✅ Stored messages cleared.")
-        return POST_STORED_MENU
-
-    elif data == "post_all":
-        stored = load_json(STORED_FILE).get(str(user_id), [])
-        if not stored:
-            await query.message.reply_text("❌ No messages stored.")
-            return POST_STORED_MENU
-
-        channels = load_json(CHANNELS_FILE).get(str(user_id), {})
-        if not channels:
-            await query.message.reply_text("❌ No channels to post to.")
-            return POST_STORED_MENU
-
-        success = 0
-        failed = 0
-        for msg in stored:
-            for chat_id in channels:
-                try:
-                    await context.bot.copy_message(chat_id=chat_id, from_chat_id=msg["chat_id"], message_id=msg["message_id"])
-                    success += 1
-                except Exception as e:
-                    failed += 1
-                    logger.error(e)
-        await query.message.reply_text(f"✅ Posted to all channels.\nSuccess: {success}, Failed: {failed}")
-        return POST_STORED_MENU
-
-    elif data == "select_channel":
-        channels = load_json(CHANNELS_FILE).get(str(user_id), {})
-        if not channels:
-            await query.message.reply_text("You have no channels.")
-            return POST_STORED_MENU
-
-        buttons = [
-            [InlineKeyboardButton(name, callback_data=f"select_post|{chat_id}")]
-            for chat_id, name in channels.items()
-        ]
-        buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="post_stored_back")])
-        await query.message.reply_text("Choose a channel:", reply_markup=InlineKeyboardMarkup(buttons))
-        return POST_STORED_MENU
-
-    elif data.startswith("select_post|"):
-        return await post_to_selected_channel(update, context)
-
-
-async def add_channel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    text = update.message.text.strip()
+    if user_id != OWNER_ID:
+        await update.message.reply_text("❌ Only the owner can add admins.", reply_markup=get_main_keyboard(user_id))
+        return ConversationHandler.END
+
+    new_id = update.message.text.strip()
+    if not new_id.isdigit():
+        await update.message.reply_text("❌ Invalid user ID. Must be numeric.")
+        return ConversationHandler.END
+
+    if new_id == str(OWNER_ID):
+        await update.message.reply_text("⚠️ Already the owner.")
+        return ConversationHandler.END
+
+    admins = load_json(ADMINS_FILE)
+    if new_id in admins:
+        await update.message.reply_text("Already an admin.")
+    else:
+        admins[new_id] = True
+        save_json(ADMINS_FILE, admins)
+        await update.message.reply_text("✅ Admin added.")
+    await update.message.reply_text("Main menu:", reply_markup=get_main_keyboard(user_id))
+    return ConversationHandler.END
+
+async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != OWNER_ID:
+        await update.message.reply_text("❌ Only the owner can remove admins.", reply_markup=get_main_keyboard(user_id))
+        return ConversationHandler.END
+
+    del_id = update.message.text.strip()
+    if del_id == str(OWNER_ID):
+        await update.message.reply_text("❌ Cannot remove owner.")
+        return ConversationHandler.END
+
+    admins = load_json(ADMINS_FILE)
+    if del_id in admins:
+        del admins[del_id]
+        save_json(ADMINS_FILE, admins)
+        await update.message.reply_text("✅ Admin removed.")
+    else:
+        await update.message.reply_text("User not found in admin list.")
+    await update.message.reply_text("Main menu:", reply_markup=get_main_keyboard(user_id))
+    return ConversationHandler.END
+
+async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    channel = update.message.text.strip()
+
+    if channel.startswith('@'):
+        channel_id = channel
+    elif channel.startswith('-') and channel[1:].isdigit():
+        channel_id = channel
+    else:
+        await update.message.reply_text("❌ Invalid channel ID or username. Use @ChannelName or -100123456789.")
+        return ConversationHandler.END
+
+    if not await is_bot_channel_admin(context, channel_id):
+        await update.message.reply_text("❌ Bot must be an admin in the channel.")
+        return ConversationHandler.END
 
     channels = load_json(CHANNELS_FILE)
-    user_channels = channels.get(str(user_id), {})
+    if channel_id in channels:
+        await update.message.reply_text("Channel already added.")
+    else:
+        try:
+            chat = await context.bot.get_chat(channel_id)
+            channels[channel_id] = chat.title or channel_id
+            save_json(CHANNELS_FILE, channels)
+            await update.message.reply_text(f"✅ Channel {channel_id} added.")
+        except telegram.error.TelegramError as e:
+            await update.message.reply_text(f"❌ Error: {e.message}")
+    await update.message.reply_text("Main menu:", reply_markup=get_main_keyboard(user_id))
+    return ConversationHandler.END
 
-    if len(user_channels) >= 5:
-        await update.message.reply_text("❌ You can only add up to 5 channels.")
-        return SELECT_ACTION
-
-    try:
-        chat = await context.bot.get_chat(text)
-        user_channels[str(chat.id)] = chat.title or chat.username or str(chat.id)
-        channels[str(user_id)] = user_channels
-        save_json(CHANNELS_FILE, channels)
-        await update.message.reply_text(f"✅ Channel '{chat.title}' added.")
-    except Exception as e:
-        logger.error(e)
-        await update.message.reply_text("❌ Failed to add channel. Make sure bot is admin in it.")
-
-    return SELECT_ACTION
-
-
-async def store_forwarded_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def remove_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    msg = update.message
+    channel = update.message.text.strip()
 
-    stored = load_json(STORED_FILE)
-    user_msgs = stored.get(str(user_id), [])
+    channels = load_json(CHANNELS_FILE)
+    if channel in channels:
+        del channels[channel]
+        save_json(CHANNELS_FILE, channels)
+        await update.message.reply_text(f"✅ Channel {channel} removed.")
+    else:
+        await update.message.reply_text("Channel not found in the list.")
+    await update.message.reply_text("Main menu:", reply_markup=get_main_keyboard(user_id))
+    return ConversationHandler.END
 
-    user_msgs.append({
-        "chat_id": msg.forward_from_chat.id if msg.forward_from_chat else msg.chat.id,
-        "message_id": msg.message_id
-    })
+async def post_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    message = update.message.text
+    channels = load_json(CHANNELS_FILE)
 
-    stored[str(user_id)] = user_msgs
-    save_json(STORED_FILE, stored)
-    await update.message.reply_text("✅ Message stored.")
-
-
-async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Done storing messages.")
-    return SELECT_ACTION
-
-
-async def post_to_selected_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-
-    if not is_admin(user_id):
-        await query.message.reply_text("❌ Unauthorized.")
-        return POST_STORED_MENU
-
-    _, channel_id = query.data.split("|", 1)
-
-    stored = load_json(STORED_FILE).get(str(user_id), [])
-    if not stored:
-        await query.message.reply_text("❌ No messages stored.")
-        return POST_STORED_MENU
-
-    channels = load_json(CHANNELS_FILE).get(str(user_id), {})
-    if channel_id not in channels:
-        await query.message.reply_text("❌ Invalid channel.")
-        return POST_STORED_MENU
+    if not channels:
+        await update.message.reply_text("No channels to post to.")
+        await update.message.reply_text("Main menu:", reply_markup=get_main_keyboard(user_id))
+        return ConversationHandler.END
 
     success = 0
-    failed = 0
-    for msg in stored:
+    failed = []
+    for channel_id in channels:
         try:
-            await context.bot.copy_message(
-                chat_id=channel_id,
-                from_chat_id=msg["chat_id"],
-                message_id=msg["message_id"]
-            )
+            await context.bot.send_message(chat_id=channel_id, text=message)
             success += 1
-        except Exception as e:
-            failed += 1
-            logger.error(f"Failed to post to {channel_id}: {e}")
+        except telegram.error.TelegramError as e:
+            failed.append(f"{channel_id}: {e.message}")
 
-    await query.message.reply_text(f"✅ Posted {success} messages to '{channels[channel_id]}'. Failed: {failed}")
-    return POST_STORED_MENU
-
+    msg = f"✅ Posted to {success} channel(s)."
+    if failed:
+        msg += f"\n❌ Failed for: {', '.join(failed)}"
+    await update.message.reply_text(msg)
+    await update.message.reply_text("Main menu:", reply_markup=get_main_keyboard(user_id))
+    return ConversationHandler.END
 
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    initialize_files()
+    if not BOT_TOKEN or not OWNER_ID:
+        logger.error("BOT_TOKEN or OWNER_ID not set")
+        return
 
-    conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("start", start),
+            CallbackQueryHandler(handle_callback)
+        ],
         states={
-            SELECT_ACTION: [CallbackQueryHandler(button_handler)],
-            CHANNEL_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_channel_handler)],
-            POST_STORED_MENU: [
-                MessageHandler(filters.FORWARDED, store_forwarded_message),
-                MessageHandler(filters.Regex("^/done$"), done),
-                CallbackQueryHandler(button_handler)
-            ],
+            ADD_ADMIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_admin)],
+            REMOVE_ADMIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_admin)],
+            ADD_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_channel)],
+            REMOVE_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_channel)],
+            POST_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, post_message)]
         },
-        fallbacks=[CommandHandler("start", start)],
+        fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True
     )
 
-    app.add_handler(conv)
-    app.run_polling()
-
+    app.add_handler(conv_handler)
+    logger.info("Bot is running...")
+    try:
+        app.run_polling()
+    except Exception as e:
+        logger.error(f"Bot crashed: {e}")
 
 if __name__ == "__main__":
     main()
