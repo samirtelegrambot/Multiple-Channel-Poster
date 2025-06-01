@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID", 0))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g., https://multiple-channel-poster.onrender.com/webhook
+PORT = int(os.getenv("PORT", 8443))  # Render provides PORT, default to 8443 for local testing
 
 # States
 ADD_ADMIN, REMOVE_ADMIN, ADD_CHANNEL, REMOVE_CHANNEL, POST_MESSAGE, CONFIRM_ACTION = range(6)
@@ -27,23 +29,22 @@ ADD_ADMIN, REMOVE_ADMIN, ADD_CHANNEL, REMOVE_CHANNEL, POST_MESSAGE, CONFIRM_ACTI
 LAST_POST_TIME = {}
 POST_RATE = 30  # 30 seconds cooldown for posting
 
-# Initialize SQLite database
+# Initialize in-memory SQLite database
 def initialize_db():
     try:
-        conn = sqlite3.connect('bot_data.db')
+        conn = sqlite3.connect(':memory:')  # In-memory database for simplicity
         c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS admins (user_id TEXT PRIMARY KEY)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS channels (channel_id TEXT PRIMARY KEY, title TEXT)''')
+        c.execute('''CREATE TABLE admins (user_id TEXT PRIMARY KEY)''')
+        c.execute('''CREATE TABLE channels (channel_id TEXT PRIMARY KEY, title TEXT)''')
         conn.commit()
+        return conn
     except sqlite3.Error as e:
         logger.error(f"Error initializing database: {e}")
-    finally:
-        conn.close()
+        return None
 
 # Load and save data
-def load_admins():
+def load_admins(conn):
     try:
-        conn = sqlite3.connect('bot_data.db')
         c = conn.cursor()
         c.execute("SELECT user_id FROM admins")
         admins = {row[0]: True for row in c.fetchall()}
@@ -51,12 +52,9 @@ def load_admins():
     except sqlite3.Error as e:
         logger.error(f"Error loading admins: {e}")
         return {}
-    finally:
-        conn.close()
 
-def save_admins(admins):
+def save_admins(conn, admins):
     try:
-        conn = sqlite3.connect('bot_data.db')
         c = conn.cursor()
         c.execute("DELETE FROM admins")
         for admin_id in admins:
@@ -64,12 +62,9 @@ def save_admins(admins):
         conn.commit()
     except sqlite3.Error as e:
         logger.error(f"Error saving admins: {e}")
-    finally:
-        conn.close()
 
-def load_channels():
+def load_channels(conn):
     try:
-        conn = sqlite3.connect('bot_data.db')
         c = conn.cursor()
         c.execute("SELECT channel_id, title FROM channels")
         channels = {row[0]: row[1] for row in c.fetchall()}
@@ -77,12 +72,9 @@ def load_channels():
     except sqlite3.Error as e:
         logger.error(f"Error loading channels: {e}")
         return {}
-    finally:
-        conn.close()
 
-def save_channels(channels):
+def save_channels(conn, channels):
     try:
-        conn = sqlite3.connect('bot_data.db')
         c = conn.cursor()
         c.execute("DELETE FROM channels")
         for channel_id, title in channels.items():
@@ -90,11 +82,9 @@ def save_channels(channels):
         conn.commit()
     except sqlite3.Error as e:
         logger.error(f"Error saving channels: {e}")
-    finally:
-        conn.close()
 
 def is_admin(user_id):
-    admins = load_admins()
+    admins = load_admins(db_conn)
     return str(user_id) == str(OWNER_ID) or str(user_id) in admins
 
 async def is_bot_channel_admin(context, channel_id):
@@ -154,11 +144,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ADD_ADMIN
 
     elif text == "➖ Remove Admin" and str(user_id) == str(OWNER_ID):
-        await update.message.reply_text("Send the user ID or @username to remove from admins (or /cancel to abort):")
+        await update.message.reply_text("Send the user ID or @username to remove from admins (or drown to abort):")
         return REMOVE_ADMIN
 
     elif text == "📋 List Admins" and str(user_id) == str(OWNER_ID):
-        admins = load_admins()
+        admins = load_admins(db_conn)
         msg = "👮 Admins List:\n"
         msg += f"👑 Owner: `{OWNER_ID}`\n"
         if admins:
@@ -177,7 +167,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return REMOVE_CHANNEL
 
     elif text == "📋 My Channels":
-        channels = load_channels()
+        channels = load_channels(db_conn)
         if not channels:
             await update.message.reply_text("No channels added yet.")
         else:
@@ -259,38 +249,38 @@ async def confirm_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == 'add_admin':
         new_id = context.user_data.get('new_id')
-        admins = load_admins()
+        admins = load_admins(db_conn)
         if new_id in admins:
             await update.message.reply_text("Already an admin.")
         else:
             admins[new_id] = True
-            save_admins(admins)
+            save_admins(db_conn, admins)
             await update.message.reply_text(f"✅ Admin {input_text} added.")
     elif action == 'remove_admin':
         remove_id = context.user_data.get('remove_id')
-        admins = load_admins()
+        admins = load_admins(db_conn)
         if remove_id in admins:
             del admins[remove_id]
-            save_admins(admins)
+            save_admins(db_conn, admins)
             await update.message.reply_text(f"✅ Admin {input_text} removed.")
         else:
             await update.message.reply_text("User ID not found in admin list.")
     elif action == 'add_channel':
         channel_id = context.user_data.get('channel_id')
         title = context.user_data.get('title')
-        channels = load_channels()
+        channels = load_channels(db_conn)
         if channel_id in channels:
             await update.message.reply_text("Channel already added.")
         else:
             channels[channel_id] = title
-            save_channels(channels)
+            save_channels(db_conn, channels)
             await update.message.reply_text(f"✅ Channel {input_text} added.")
     elif action == 'remove_channel':
         channel_id = context.user_data.get('channel_id')
-        channels = load_channels()
+        channels = load_channels(db_conn)
         if channel_id in channels:
             del channels[channel_id]
-            save_channels(channels)
+            save_channels(db_conn, channels)
             await update.message.reply_text(f"✅ Channel {input_text} removed.")
         else:
             await update.message.reply_text("Channel not found in the list.")
@@ -352,7 +342,7 @@ async def post_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     LAST_POST_TIME[user_id] = time.time()
-    channels = load_channels()
+    channels = load_channels(db_conn)
     if not channels:
         await update.message.reply_text("No channels to post to.")
         await update.message.reply_text("Main menu:", reply_markup=get_main_keyboard(user_id))
@@ -377,14 +367,23 @@ async def post_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Main menu:", reply_markup=get_main_keyboard(user_id))
     return ConversationHandler.END
 
+async def webhook_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming webhook updates by passing them to the ConversationHandler."""
+    return await conv_handler.handle_update(update, context.dispatcher, context)
+
 def main():
-    initialize_db()
-    if not BOT_TOKEN or not OWNER_ID:
-        logger.error("BOT_TOKEN or OWNER_ID not set")
+    global db_conn
+    db_conn = initialize_db()
+    if not db_conn:
+        logger.error("Failed to initialize database")
+        return
+    if not BOT_TOKEN or not OWNER_ID or not WEBHOOK_URL:
+        logger.error("BOT_TOKEN, OWNER_ID, or WEBHOOK_URL not set")
         return
 
     app = Application.builder().token(BOT_TOKEN).build()
 
+    global conv_handler
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
@@ -404,21 +403,22 @@ def main():
 
     app.add_handler(conv_handler)
 
-    logger.info("Bot is starting...")
-    max_retries = 5
-    retry_delay = 5
-    for attempt in range(max_retries):
-        try:
-            app.run_polling()
-            break
-        except telegram.error.Conflict as e:
-            logger.error(f"Conflict error: {e}. Retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
-            time.sleep(retry_delay)
-        except Exception as e:
-            logger.error(f"Bot crashed: {e}")
-            break
-    else:
-        logger.error("Max retries reached. Could not resolve conflict. Please ensure only one bot instance is running.")
+    # Set up webhook
+    logger.info("Setting up webhook...")
+    try:
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path="/webhook",
+            webhook_url=f"{WEBHOOK_URL}/webhook"
+        )
+        logger.info(f"Bot is running on webhook: {WEBHOOK_URL}/webhook")
+    except telegram.error.TelegramError as e:
+        logger.error(f"Failed to set webhook: {e}")
+    except Exception as e:
+        logger.error(f"Bot crashed: {e}")
+    finally:
+        db_conn.close()
 
 if __name__ == "__main__":
     main()
