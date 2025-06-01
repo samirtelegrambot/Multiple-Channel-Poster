@@ -1,7 +1,9 @@
 import os
 import json
 import logging
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import (
+    Update, ReplyKeyboardMarkup, KeyboardButton
+)
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     ConversationHandler, ContextTypes, filters
@@ -69,6 +71,14 @@ def get_main_keyboard(user_id):
         keyboard.append([KeyboardButton("🧑‍💻 Manage Admins")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
+def get_admin_management_keyboard():
+    keyboard = [
+        [KeyboardButton("➕ Add Admin"), KeyboardButton("➖ Remove Admin")],
+        [KeyboardButton("📃 List Admins")],
+        [KeyboardButton("⬅️ Back")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
@@ -91,15 +101,42 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Access denied.")
         return ConversationHandler.END
 
+    # Owner ke liye Manage Admins menu
     if text == "🧑‍💻 Manage Admins" and user_id == OWNER_ID:
+        await update.message.reply_text("Choose an action:", reply_markup=get_admin_management_keyboard())
+        return ConversationHandler.END
+
+    elif text == "⬅️ Back" and user_id == OWNER_ID:
+        await update.message.reply_text("Main menu:", reply_markup=get_main_keyboard(user_id))
+        return ConversationHandler.END
+
+    elif text == "➕ Add Admin" and user_id == OWNER_ID:
         await update.message.reply_text("Send the user ID to add as admin (or /cancel to abort):")
         return ADD_ADMIN
+
+    elif text == "➖ Remove Admin" and user_id == OWNER_ID:
+        await update.message.reply_text("Send the user ID to remove from admins (or /cancel to abort):")
+        return REMOVE_ADMIN
+
+    elif text == "📃 List Admins" and user_id == OWNER_ID:
+        admins = load_json(ADMINS_FILE)
+        msg = "👮 Admins List:\n"
+        msg += f"👑 Owner: `{OWNER_ID}`\n"
+        if admins:
+            msg += "🛡️ Other Admins:\n" + "\n".join(f"- `{uid}`" for uid in admins)
+        else:
+            msg += "No other admins."
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_admin_management_keyboard())
+        return ConversationHandler.END
+
     elif text == "➕ Add Channel":
         await update.message.reply_text("Send the channel ID or username (e.g., @ChannelName or -100123456789) (or /cancel to abort):")
         return ADD_CHANNEL
+
     elif text == "➖ Remove Channel":
         await update.message.reply_text("Send the channel ID or username to remove (or /cancel to abort):")
         return REMOVE_CHANNEL
+
     elif text == "📃 My Channels":
         channels = load_json(CHANNELS_FILE)
         if not channels:
@@ -108,9 +145,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = "📃 Channels:\n" + "\n".join(f"{k} ({v})" for k, v in channels.items())
             await update.message.reply_text(msg)
         return ConversationHandler.END
+
     elif text == "📤 Post":
         await update.message.reply_text("Send the message to post to all channels (or /cancel to abort):")
         return POST_MESSAGE
+
     else:
         await update.message.reply_text("Unknown command. Please use the menu.", reply_markup=get_main_keyboard(user_id))
         return ConversationHandler.END
@@ -134,6 +173,21 @@ async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         admins[new_id] = True
         save_json(ADMINS_FILE, admins)
         await update.message.reply_text("✅ Admin added.")
+
+    await update.message.reply_text("Main menu:", reply_markup=get_main_keyboard(user_id))
+    return ConversationHandler.END
+
+async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    remove_id = update.message.text.strip()
+
+    admins = load_json(ADMINS_FILE)
+    if remove_id in admins:
+        del admins[remove_id]
+        save_json(ADMINS_FILE, admins)
+        await update.message.reply_text("✅ Admin removed.")
+    else:
+        await update.message.reply_text("User ID not found in admin list.")
 
     await update.message.reply_text("Main menu:", reply_markup=get_main_keyboard(user_id))
     return ConversationHandler.END
@@ -219,19 +273,21 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)
+            MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler),
         ],
         states={
             ADD_ADMIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_admin)],
+            REMOVE_ADMIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_admin)],
             ADD_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_channel)],
             REMOVE_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_channel)],
-            POST_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, post_message)]
+            POST_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, post_message)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True
     )
 
     app.add_handler(conv_handler)
+
     logger.info("Bot is running...")
     try:
         app.run_polling()
