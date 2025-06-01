@@ -17,8 +17,13 @@ OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 ADMINS_FILE = "admins.json"
 CHANNELS_FILE = "channels.json"
 
-# States for ConversationHandler
-WAIT_ADD_CHANNEL, WAIT_REMOVE_CHANNEL, WAIT_ADD_ADMIN, WAIT_REMOVE_ADMIN = range(4)
+# Conversation states
+(
+    WAIT_ADD_CHANNEL,
+    WAIT_REMOVE_CHANNEL,
+    WAIT_ADD_ADMIN,
+    WAIT_REMOVE_ADMIN,
+) = range(4)
 
 def load_json(filename):
     try:
@@ -81,25 +86,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not is_admin(user_id):
         await update.message.reply_text("❌ Access denied.")
-        return
+        return ConversationHandler.END
 
+    # Exit menu
     if text == "⬅️ Exit":
         await update.message.reply_text("Use /start to open menu again.", reply_markup=ReplyKeyboardMarkup([], resize_keyboard=True))
-        return
+        return ConversationHandler.END
 
+    # Add channel
     if text == "➕ Add Channel":
         await update.message.reply_text("Send channel ID or username to add:")
         return WAIT_ADD_CHANNEL
 
+    # Remove channel
     if text == "➖ Remove Channel":
         user_channels = get_user_channels(user_id)
         if not user_channels:
             await update.message.reply_text("You have no channels.")
-            return
+            return ConversationHandler.END
         channels_list = "\n".join([f"{name} ({cid})" for cid, name in user_channels.items()])
         await update.message.reply_text(f"Your channels:\n{channels_list}\nSend channel ID to remove:")
         return WAIT_REMOVE_CHANNEL
 
+    # Show channels
     if text == "📃 My Channels":
         user_channels = get_user_channels(user_id)
         if not user_channels:
@@ -107,11 +116,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             channels_list = "\n".join([f"{name} ({cid})" for cid, name in user_channels.items()])
             await update.message.reply_text(f"Your channels:\n{channels_list}")
+        return ConversationHandler.END
 
+    # Manage Admins (Owner only)
     if text == "👨‍💻 Manage Admins":
         if not is_owner(user_id):
             await update.message.reply_text("❌ Only owner can manage admins.")
-            return
+            return ConversationHandler.END
+
         buttons = [
             [KeyboardButton("➕ Add Admin"), KeyboardButton("➖ Remove Admin")],
             [KeyboardButton("📃 List Admins")],
@@ -120,6 +132,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Manage Admins Menu:", reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return WAIT_ADD_ADMIN
 
+    # Post Stored submenu with InlineKeyboardButtons
     if text == "📤 Post Stored":
         keyboard = [
             [InlineKeyboardButton("🧹 Clear Stored", callback_data="clear_stored")],
@@ -128,14 +141,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("⬅️ Back", callback_data="back_main")]
         ]
         await update.message.reply_text("Post Stored Menu:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return ConversationHandler.END
+
+    await update.message.reply_text("Unknown command, please use the menu buttons.")
+    return ConversationHandler.END
 
 async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     channel_id = update.message.text.strip()
     user_channels = get_user_channels(user_id)
-    user_channels[channel_id] = channel_id  # For simplicity, using ID as name
-    save_user_channels(user_id, user_channels)
-    await update.message.reply_text(f"✅ Channel '{channel_id}' added.")
+    if channel_id in user_channels:
+        await update.message.reply_text("Channel already exists.")
+    else:
+        user_channels[channel_id] = channel_id
+        save_user_channels(user_id, user_channels)
+        await update.message.reply_text(f"✅ Channel '{channel_id}' added.")
     return ConversationHandler.END
 
 async def remove_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -179,6 +199,9 @@ async def manage_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Admins:\n{admin_list}")
         return ConversationHandler.END
 
+    await update.message.reply_text("Unknown command in Manage Admins.")
+    return ConversationHandler.END
+
 async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_owner(user_id):
@@ -186,9 +209,12 @@ async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     new_admin_id = update.message.text.strip()
     admins = load_json(ADMINS_FILE)
-    admins[new_admin_id] = True
-    save_json(ADMINS_FILE, admins)
-    await update.message.reply_text(f"✅ Admin {new_admin_id} added.")
+    if new_admin_id in admins:
+        await update.message.reply_text("User is already an admin.")
+    else:
+        admins[new_admin_id] = True
+        save_json(ADMINS_FILE, admins)
+        await update.message.reply_text(f"✅ Admin {new_admin_id} added.")
     return ConversationHandler.END
 
 async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -213,7 +239,7 @@ async def post_stored_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = query.from_user.id
 
     if data == "clear_stored":
-        # Implement clearing stored messages for user
+        # Implement clearing stored messages for user here (placeholder)
         await query.edit_message_text("Stored messages cleared.")
     elif data == "post_all":
         await query.edit_message_text("Posting stored messages to all your channels (feature to implement).")
