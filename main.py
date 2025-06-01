@@ -17,12 +17,11 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-
 from dotenv import load_dotenv
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID"))  # Put your Telegram user ID in .env file
+OWNER_ID = int(os.getenv("OWNER_ID"))  # Make sure this is set in .env
 ADMINS_FILE = "admins.json"
 DATA_FILE = "user_channels.json"
 MAX_CHANNELS = 5
@@ -41,7 +40,11 @@ if os.path.exists(ADMINS_FILE):
     with open(ADMINS_FILE, "r") as f:
         admins = json.load(f)
 else:
-    admins = [OWNER_ID]
+    admins = []
+
+# ✅ Ensure OWNER_ID is always in the admins list
+if OWNER_ID not in admins:
+    admins.append(OWNER_ID)
     with open(ADMINS_FILE, "w") as f:
         json.dump(admins, f)
 
@@ -56,6 +59,8 @@ def save_admins():
 # ========================= Handlers ============================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    logger.info(f"/start used by user: {user_id}")
+    
     if user_id in admins:
         keyboard = [
             [KeyboardButton("➕ Add Channel"), KeyboardButton("📤 Post to Channel")],
@@ -259,11 +264,15 @@ async def forward_cleaned(message, context, target_chat_id):
 
 # ========================= Main ============================
 def main():
+    print(f"✅ Bot is starting... OWNER_ID: {OWNER_ID}")
+    print(f"Current admins: {admins}")
+    
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.FORWARDED, handle_forwards))
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL, handle_message))
+    
     print("🤖 Bot is running...")
     app.run_polling()
 
