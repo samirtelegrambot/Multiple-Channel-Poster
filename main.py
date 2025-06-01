@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import asyncio
 from telegram import (
     Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 )
@@ -8,6 +9,7 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ConversationHandler, ContextTypes, filters
 )
+from telegram.error import Conflict
 from dotenv import load_dotenv
 
 logging.basicConfig(
@@ -34,6 +36,7 @@ STORED_FILE = "stored_messages.json"
 ) = range(11)
 
 def initialize_files():
+    """Initialize JSON files if they don't exist."""
     for file in [ADMINS_FILE, CHANNELS_FILE, STORED_FILE]:
         if not os.path.exists(file):
             with open(file, 'w') as f:
@@ -43,6 +46,7 @@ def initialize_files():
                     json.dump({}, f)
 
 def load_json(file):
+    """Load data from a JSON file."""
     try:
         with open(file, 'r') as f:
             return json.load(f)
@@ -51,6 +55,7 @@ def load_json(file):
         return {}
 
 def save_json(file, data):
+    """Save data to a JSON file."""
     try:
         with open(file, 'w') as f:
             json.dump(data, f, indent=2)
@@ -58,13 +63,16 @@ def save_json(file, data):
         logger.error(f"Error saving {file}: {e}")
 
 def is_owner(user_id):
+    """Check if the user is the bot owner."""
     return user_id == OWNER_ID
 
 def is_admin(user_id):
+    """Check if the user is an admin or owner."""
     admins = load_json(ADMINS_FILE)
     return is_owner(user_id) or str(user_id) in admins
 
 def get_main_keyboard(user_id):
+    """Generate the main keyboard based on user permissions."""
     base_buttons = [
         [KeyboardButton("➕ Add Channel"), KeyboardButton("➖ Remove Channel")],
         [KeyboardButton("📃 My Channels"), KeyboardButton("📤 Post Stored")],
@@ -74,6 +82,7 @@ def get_main_keyboard(user_id):
     return ReplyKeyboardMarkup(base_buttons, resize_keyboard=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the /start command."""
     user_id = update.effective_user.id
     if not is_admin(user_id):
         await update.message.reply_text("❌ You are not authorized to use this bot.")
@@ -87,6 +96,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --------- Admin Management ---------
 
 async def manage_admins_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the admin management menu (owner only)."""
     user_id = update.effective_user.id
     if not is_owner(user_id):
         await update.message.reply_text("❌ Only owner can manage admins.")
@@ -102,12 +112,14 @@ async def manage_admins_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return LIST_ADMINS
 
 async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start the process to add an admin."""
     query = update.callback_query
     await query.answer()
     await query.message.reply_text("Send the user ID to ADD as admin:")
     return ADD_ADMIN_WAIT
 
 async def add_admin_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Complete the process of adding an admin."""
     user_id = update.message.from_user.id
     if not is_owner(user_id):
         await update.message.reply_text("❌ Only owner can add admins.")
@@ -129,12 +141,14 @@ async def add_admin_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def remove_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start the process to remove an admin."""
     query = update.callback_query
     await query.answer()
     await query.message.reply_text("Send the user ID to REMOVE from admins:")
     return REMOVE_ADMIN_WAIT
 
 async def remove_admin_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Complete the process of removing an admin."""
     user_id = update.message.from_user.id
     if not is_owner(user_id):
         await update.message.reply_text("❌ Only owner can remove admins.")
@@ -156,6 +170,7 @@ async def remove_admin_finish(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 async def list_admins_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the list of admins."""
     query = update.callback_query
     await query.answer()
     admins = load_json(ADMINS_FILE)
@@ -170,6 +185,7 @@ async def list_admins_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return LIST_ADMINS
 
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Return to the main menu."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -182,6 +198,7 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --------- Channel Management ---------
 
 async def add_channel_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start the process to add a channel."""
     user_id = update.message.from_user.id
     if not is_admin(user_id):
         await update.message.reply_text("❌ You are not authorized.")
@@ -190,6 +207,7 @@ async def add_channel_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ADD_CHANNEL_WAIT
 
 async def add_channel_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Complete the process of adding a channel."""
     user_id = update.message.from_user.id
     if not is_admin(user_id):
         await update.message.reply_text("❌ You are not authorized.")
@@ -202,7 +220,6 @@ async def add_channel_finish(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if chat.type not in ["channel", "supergroup", "group"]:
             await update.message.reply_text("❌ Invalid channel or group.")
             return ConversationHandler.END
-        # Check if bot is admin in the channel
         chat_member = await context.bot.get_chat_member(chat_id=chat.id, user_id=context.bot.id)
         if chat_member.status not in ['administrator', 'creator']:
             await update.message.reply_text("❌ Bot must be an admin in the channel.")
@@ -224,6 +241,7 @@ async def add_channel_finish(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ConversationHandler.END
 
 async def remove_channel_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start the process to remove a channel."""
     user_id = update.message.from_user.id
     if not is_admin(user_id):
         await update.message.reply_text("❌ You are not authorized.")
@@ -232,6 +250,7 @@ async def remove_channel_start(update: Update, context: ContextTypes.DEFAULT_TYP
     return REMOVE_CHANNEL_WAIT
 
 async def remove_channel_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Complete the process of removing a channel."""
     user_id = update.message.from_user.id
     if not is_admin(user_id):
         await update.message.reply_text("❌ You are not authorized.")
@@ -252,6 +271,7 @@ async def remove_channel_finish(update: Update, context: ContextTypes.DEFAULT_TY
     return ConversationHandler.END
 
 async def show_my_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the list of channels for the user."""
     user_id = update.message.from_user.id
     if not is_admin(user_id):
         await update.message.reply_text("❌ You are not authorized.")
@@ -273,6 +293,7 @@ async def show_my_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --------- Post Stored Menu ---------
 
 async def post_stored_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the menu for posting stored messages."""
     user_id = update.message.from_user.id
     if not is_admin(user_id):
         await update.message.reply_text("❌ Unauthorized.")
@@ -288,6 +309,7 @@ async def post_stored_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return POST_STORED_MENU
 
 async def clear_stored(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear all stored messages for the user."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -302,6 +324,7 @@ async def clear_stored(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return POST_STORED_MENU
 
 async def post_to_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Post all stored messages to all user channels."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -334,6 +357,7 @@ async def post_to_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return POST_STORED_MENU
 
 async def select_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the list of channels to post stored messages."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -352,6 +376,7 @@ async def select_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     return SELECT_CHANNEL_POST
 
 async def post_to_selected_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Post stored messages to a selected channel."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -401,6 +426,7 @@ async def post_to_selected_channel(update: Update, context: ContextTypes.DEFAULT
     return POST_STORED_MENU
 
 async def store_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Store a message sent in a private chat."""
     user_id = update.message.from_user.id
     if not is_admin(user_id):
         return
@@ -419,6 +445,7 @@ async def store_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Message stored successfully.")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel the current operation and return to the main menu."""
     user_id = update.message.from_user.id
     await update.message.reply_text(
         "Operation cancelled.", reply_markup=get_main_keyboard(user_id)
@@ -426,6 +453,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle all callback queries from inline buttons."""
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -452,7 +480,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Unknown action.")
         return ConversationHandler.END
 
-def main():
+async def main():
+    """Main function to start the bot with conflict handling."""
     initialize_files()
     application = Application.builder().token(BOT_TOKEN).build()
 
@@ -469,7 +498,7 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)]
     )
 
-    # Conversation handler for channel management
+    # Conversation handler for channel management and posting
     channel_conv = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex("➕ Add Channel"), add_channel_start),
@@ -485,13 +514,3 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     )
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(admin_conv)
-    application.add_handler(channel_conv)
-    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, store_message))
-
-    application.run_polling()
-
-if __name__ == "__main__":
-    main()
